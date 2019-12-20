@@ -14,9 +14,8 @@
 
 //! Containers of objects.
 
-use std::rc::Rc;
-
-use fallible_iterator::{FallibleIterator, IntoFallibleIterator};
+use async_trait::async_trait;
+use futures::Stream;
 
 use super::super::common::{ContainerRef, IntoVerified, Refresh, ResourceIterator, ResourceQuery};
 use super::super::session::Session;
@@ -28,35 +27,36 @@ use super::{api, protocol};
 /// A query to containers.
 #[derive(Clone, Debug)]
 pub struct ContainerQuery {
-    session: Rc<Session>,
+    session: Session,
     query: Query,
-    can_paginate: bool,
+    limit: Option<usize>,
+    marker: Option<String>,
 }
 
 /// Structure representing a single container.
 #[derive(Clone, Debug)]
 pub struct Container {
-    session: Rc<Session>,
+    session: Session,
     inner: protocol::Container,
 }
 
 impl Container {
     /// Create a new Container object.
-    pub(crate) fn new(session: Rc<Session>, inner: protocol::Container) -> Container {
+    pub(crate) fn new(session: Session, inner: protocol::Container) -> Container {
         Container { session, inner }
     }
 
     /// Create a new container.
-    pub(crate) fn create<Id: AsRef<str>>(session: Rc<Session>, name: Id) -> Result<Container> {
+    pub(crate) async fn create<Id: AsRef<str>>(session: Session, name: Id) -> Result<Container> {
         let c_id = name.as_ref();
-        let _ = api::create_container(&session, c_id)?;
-        let inner = api::get_container(&session, c_id)?;
+        let _ = api::create_container(&session, c_id).await?;
+        let inner = api::get_container(&session, c_id).await?;
         Ok(Container::new(session, inner))
     }
 
     /// Load a Container object.
-    pub(crate) fn load<Id: AsRef<str>>(session: Rc<Session>, name: Id) -> Result<Container> {
-        let inner = api::get_container(&session, name)?;
+    pub(crate) async fn load<Id: AsRef<str>>(session: Session, name: Id) -> Result<Container> {
+        let inner = api::get_container(&session, name).await?;
         Ok(Container::new(session, inner))
     }
 
@@ -64,14 +64,14 @@ impl Container {
     ///
     /// If `delete_objects` is `true`, all objects inside the container are deleted first.
     /// Otherwise deletion will fail if the container is non-empty.
-    pub fn delete(self, delete_objects: bool) -> Result<()> {
+    pub async fn delete(self, delete_objects: bool) -> Result<()> {
         if delete_objects {
-            let mut iter = self.find_objects().into_iter();
+            let mut iter = self.find_objects().into_stream();
             while let Some(obj) = iter.next()? {
                 obj.delete()?;
             }
         }
-        api::delete_container(&self.session, self.inner.name)
+        api::delete_container(&self.session, self.inner.name).await
     }
 
     /// Find objects inside this container.
@@ -104,16 +104,17 @@ impl Container {
     }
 }
 
+#[async_trait]
 impl Refresh for Container {
     /// Refresh the container.
-    fn refresh(&mut self) -> Result<()> {
-        self.inner = api::get_container(&self.session, &self.inner.name)?;
+    async fn refresh(&mut self) -> Result<()> {
+        self.inner = api::get_container(&self.session, &self.inner.name).await?;
         Ok(())
     }
 }
 
 impl ContainerQuery {
-    pub(crate) fn new(session: Rc<Session>) -> ContainerQuery {
+    pub(crate) fn new(session: Session) -> ContainerQuery {
         ContainerQuery {
             session,
             query: Query::new(),
@@ -125,8 +126,7 @@ impl ContainerQuery {
     ///
     /// Using this disables automatic pagination.
     pub fn with_marker<T: Into<String>>(mut self, marker: T) -> Self {
-        self.can_paginate = false;
-        self.query.push_str("marker", marker);
+        self.marker = Some(marker.into());
         self
     }
 
@@ -134,8 +134,7 @@ impl ContainerQuery {
     ///
     /// Using this disables automatic pagination.
     pub fn with_limit(mut self, limit: usize) -> Self {
-        self.can_paginate = false;
-        self.query.push("limit", limit);
+        self.limit = Some(limit);
         self
     }
 
@@ -143,6 +142,9 @@ impl ContainerQuery {
         #[doc = "Filter by prefix."]
         with_prefix -> prefix
     }
+
+    /// Convert this query into a stream of containers.
+    pub fn into_stream(self) -> impl Stream<Item = Container> {}
 
     /// Convert this query into an iterator executing the request.
     ///
@@ -200,18 +202,6 @@ impl ResourceQuery for ContainerQuery {
                 inner: item,
             })
             .collect())
-    }
-}
-
-impl IntoFallibleIterator for ContainerQuery {
-    type Item = Container;
-
-    type Error = Error;
-
-    type IntoFallibleIter = ResourceIterator<ContainerQuery>;
-
-    fn into_fallible_iter(self) -> Self::IntoFallibleIter {
-        self.into_iter()
     }
 }
 
