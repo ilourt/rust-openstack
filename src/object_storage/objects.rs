@@ -20,6 +20,8 @@ use std::rc::Rc;
 
 use fallible_iterator::{FallibleIterator, IntoFallibleIterator};
 
+use osauth::services::OBJECT_STORAGE;
+
 use super::super::common::{
     ContainerRef, IntoVerified, ObjectRef, Refresh, ResourceIterator, ResourceQuery,
 };
@@ -27,6 +29,7 @@ use super::super::session::Session;
 use super::super::utils::Query;
 use super::super::{Error, Result};
 use super::{api, protocol};
+use reqwest::Url;
 
 /// A query to objects.
 #[derive(Clone, Debug)]
@@ -127,6 +130,13 @@ impl Object {
     #[inline]
     pub fn container_name(&self) -> &String {
         &self.c_name
+    }
+
+    /// Object url
+    #[inline]
+    pub fn url(&self) -> Result<Url> {
+        self.session
+            .get_endpoint(OBJECT_STORAGE, &[self.container_name(), self.name()])
     }
 
     transparent_property! {
