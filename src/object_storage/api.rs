@@ -14,7 +14,6 @@
 
 //! Foundation bits exposing the object storage API.
 
-use std::collections::HashMap;
 use std::io;
 
 use osauth::request::NO_PATH;
@@ -25,6 +24,7 @@ use reqwest::{Method, StatusCode};
 use super::super::session::Session;
 use super::super::utils::Query;
 use super::super::Result;
+use super::objects::ObjectHeaders;
 use super::protocol::*;
 
 /// Create a new container.
@@ -47,32 +47,12 @@ where
 }
 
 /// Create a new object.
-pub fn create_object<C, O, R>(session: &Session, container: C, object: O, body: R) -> Result<Object>
-where
-    C: AsRef<str>,
-    O: AsRef<str>,
-    R: io::Read + Send + 'static,
-{
-    let c_id = container.as_ref();
-    let o_id = object.as_ref();
-    debug!("Creating object {} in container {}", o_id, c_id);
-    let _ = session.send_checked(
-        session
-            .request(OBJECT_STORAGE, Method::PUT, &[c_id, o_id], None)?
-            .body(SyncBody::new(body)),
-    )?;
-    debug!("Successfully created object {} in container {}", o_id, c_id);
-    // We need to retrieve the size, issue HEAD.
-    get_object(session, c_id, o_id)
-}
-
-/// Create a new object providing specified headers into the request.
-pub fn create_object_with_headers<C, O, R>(
+pub fn create_object<C, O, R>(
     session: &Session,
     container: C,
     object: O,
     body: R,
-    headers: HashMap<String, String>,
+    headers: ObjectHeaders,
 ) -> Result<Object>
 where
     C: AsRef<str>,
@@ -82,11 +62,14 @@ where
     let c_id = container.as_ref();
     let o_id = object.as_ref();
     debug!("Creating object {} in container {}", o_id, c_id);
-    let mut req = session.request(OBJECT_STORAGE, Method::PUT, &[c_id, o_id], None)?;
+    let mut req = session.request(OBJECT_STORAGE, Method::PUT, &[&c_id, &o_id], None)?;
 
-    // add custom headers to the request
-    for (key, val) in headers.iter() {
-        req = req.header(key, val);
+    if headers.delete_after.is_some() {
+        req = req.header("X-Delete-After", headers.delete_after.unwrap());
+    }
+
+    if headers.delete_at.is_some() {
+        req = req.header("X-Delete-At", headers.delete_at.unwrap().timestamp());
     }
 
     let _ = session.send_checked(req.body(SyncBody::new(body)))?;
